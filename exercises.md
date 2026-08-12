@@ -30,11 +30,11 @@ critical.
 
 | Metric | Acceptable Low Score Scenario | Critical Low Score Scenario | Action Required |
 |---|---|---|---|
-| Faithfulness | | | |
-| Answer Relevance | | | |
-| Context Recall | | | |
-| Context Precision | | | |
-| Completeness | | | |
+| Faithfulness | New domain with limited context coverage; answer adds reasonable inference | < 0.6 in production RAG; hallucinations frequent | Add grounding guardrails, improve retrieval, add citation requirement |
+| Answer Relevance | Open-ended questions where partial answer is acceptable | < 0.6 for factual/specific questions | Improve prompt clarity, add query rewriting, check intent detection |
+| Context Recall | Expected answer uses knowledge not in corpus; creative tasks | < 0.6 for factual QA with evidence in corpus | Increase top-k, improve chunking, fix retriever |
+| Context Precision | Exploratory queries where broad context helps | < 0.6 for specific factual queries | Implement reranking, improve retrieval ranking |
+| Completeness | Summary-style answers where brevity is preferred | < 0.6 for detailed procedural questions | Increase context window, add few-shot examples for completeness |
 
 ### Exercise 1.2 — Bias trong LLM-as-a-Judge
 
@@ -47,14 +47,23 @@ Ba bias thường gặp:
 **Câu 1: Thiết kế experiment phát hiện position bias với ít nhất hai conditions.**
 
 > *Câu trả lời:*
+> Thiết kế A/B test: cho judge chấm cặp (Answer A, Answer B) và (Answer B, Answer A) cho cùng một question. Condition 1: Answer A ở vị trí đầu. Condition 2: Answer A ở vị trí sau. Nếu score trung bình của Answer A cao hơn ở Condition 1 một cách có ý nghĩa thống kê (t-test, p < 0.05), có position bias. Cần ít nhất 50 cặp để có power đủ.
 
 **Câu 2: Làm thế nào giảm verbosity bias bằng rubric design?**
 
 > *Câu trả lời:*
+> - Thêm tiêu chí "Conciseness" hoặc "Efficiency" vào rubric với trọng số rõ ràng
+> - Định nghĩa mức 5: "Đúng, đầy đủ, súc tích"; mức 3: "Đúng nhưng dài dòng, lặp lại"
+> - Yêu cầu judge chấm riêng "length appropriateness" tách biệt từ correctness
+> - Cung cấp ví dụ negative: answer dài nhưng đúng vẫn chỉ được 3-4 nếu không súc tích
 
 **Câu 3: Tại sao cần calibrate LLM judge với human labels?**
 
 > *Câu trả lời:*
+> - LLM judge có systematic bias (position, verbosity, self-preference) không giống human
+> - Calibration đo lường độ tương đồng (correlation, Cohen's kappa) giữa LLM và human
+> - Cho phép điều chỉnh threshold: nếu LLM chấm hà khổ hơn human 0.15 điểm, shift threshold
+> - Không calibrate thì eval results không thể tin để đưa ra quyết định deploy/block
 
 ### Exercise 1.3 — Evaluation trong CI/CD
 
@@ -62,13 +71,16 @@ Ba bias thường gặp:
 
 | Metric | Threshold | Lý do |
 |---|---:|---|
-| Faithfulness | | |
-| Answer Relevance | | |
-| Completeness | | |
+| Faithfulness | 0.7 | Hallucination trong customer support gây mất niềm tin, rủi ro pháp lý; < 0.7 nghĩa là >30% claim không grounded |
+| Answer Relevance | 0.6 | Irrelevant answer làm khách hàng bực bội; có thể chấp nhận 0.6 vì một số câu hỏi ambiguous |
+| Completeness | 0.6 | Missing info quan trọng (deadline, fee, condition) gây sai lầm; 0.6 là ngưỡng minimum |
 
 **Câu 2: Khi nào dùng offline evaluation, online evaluation và human review?**
 
 > *Câu trả lời:*
+> - **Offline evaluation**: Mỗi release/prompt change, pre-deploy gate. Chạy trên golden dataset cố định. Dùng cho regression detection, so sánh version.
+> - **Online evaluation**: Continuous trên production traffic. Dùng khi cần monitor drift, user satisfaction thực tế, A/B test. Sample-based (1-10% traffic).
+> - **Human review**: High-stakes cases (privacy, safety, legal), calibration của LLM judge, edge cases mà offline/online không bắt được. Cần cho adversarial testing, policy interpretation.
 
 ---
 
@@ -146,21 +158,21 @@ và quyết định thiết kế, không chép lại toàn bộ QA.
 
 | Hạng mục | Kết quả |
 |---|---|
-| Tổng số records | ____ / 20 |
-| Easy | ____ / 5 |
-| Medium | ____ / 7 |
-| Hard | ____ / 5 |
-| Adversarial | ____ / 3 |
-| Source documents được sử dụng | ____ / 10 |
-| Validator status | PASS / FAIL |
+| Tổng số records | 20 / 20 |
+| Easy | 5 / 5 |
+| Medium | 7 / 7 |
+| Hard | 5 / 5 |
+| Adversarial | 3 / 3 |
+| Source documents được sử dụng | 10 / 10 |
+| Validator status | PASS |
 
 **Ba case đại diện cho quyết định thiết kế**
 
 | ID | Difficulty | Source document(s) | Vì sao case phù hợp với difficulty/attack type? |
 |---|---|---|---|
-| | | | |
-| | | | |
-| | | | |
+| E01 | easy | `06_warranty_policy.md` | Direct one-document factual lookup. |
+| H01 | hard | `09_escalation_and_policy_updates.md`, `05_returns_and_exchanges.md` | Requires applying policy version by order date, not delivery date. |
+| A02 | adversarial | `00_system_scope.md` | Prompt injection asking for credentials; tests safety boundary. |
 
 **Điểm khó nhất khi xây dựng expected answer hoặc evidence là gì?**
 
@@ -173,6 +185,8 @@ và quyết định thiết kế, không chép lại toàn bộ QA.
 - [ ] `python validate_golden_dataset.py` báo `PASS`.
 
 ### Exercise 3.2 — Benchmark Run
+
+**Trạng thái:** BLOCKED — `domain_assistant.py` đã chạy được với `gemini-3-flash-preview`, nhưng Google Gemini free-tier quota chặn sau 7/20 câu (`429 RESOURCE_EXHAUSTED`, limit 5 requests/minute). Vì vậy chưa có benchmark artifact hợp lệ; không điền số giả.
 
 Chạy:
 
@@ -226,6 +240,7 @@ Copy bảng terminal vào đây hoặc điền từ `artifacts/benchmark_results
 hay generation?
 
 > *Câu trả lời:*
+> Chưa kết luận được vì benchmark chưa hoàn tất. Artifact thật bị chặn ở M03 bởi Gemini quota; cần chạy đủ 20 câu rồi mới so sánh Context Recall/Precision với Faithfulness/Relevance/Completeness.
 
 ### Exercise 3.3 — LLM-as-a-Judge Rubric Design
 
@@ -234,35 +249,36 @@ Thiết kế rubric domain-specific cho OrbitTech Customer Support. Mỗi mức 
 
 Chọn 3–5 dimensions:
 
-- [ ] Correctness
-- [ ] Completeness
-- [ ] Relevance
-- [ ] Evidence/citation
-- [ ] Actionability
-- [ ] Safety/privacy
-- [ ] Tone/clarity
+- [x] Correctness
+- [x] Completeness
+- [x] Relevance
+- [x] Evidence/citation
+- [x] Actionability
+- [x] Safety/privacy
+- [x] Tone/clarity
 - [ ] Dimension khác: __________
 
 | Score | Tiêu chí domain-specific | Ví dụ response |
 |---:|---|---|
-| 5 | | |
-| 4 | | |
-| 3 | | |
-| 2 | | |
-| 1 | | |
+| 5 | Đúng toàn bộ facts, đủ điều kiện/ngoại lệ, bám evidence, hướng dẫn an toàn và actionable. | Nêu đúng 24 tháng warranty, điều kiện coverage và cách mở repair request. |
+| 4 | Đúng chính, thiếu một chi tiết không quyết định kết quả; không hallucinate. | Đúng 14 ngày và 10% fee nhưng thiếu “confirmed delivery”. |
+| 3 | Trả lời đúng một phần hoặc còn chung chung; cần follow-up để hoàn tất. | Nêu có thể return nhưng thiếu opened/unopened condition. |
+| 2 | Sai hoặc bỏ sót điều kiện quan trọng; evidence yếu hoặc hướng dẫn chưa đủ an toàn. | Áp dụng 45 ngày cho order trước 2026-09-01. |
+| 1 | Bịa policy/spec, trả lời ngoài câu hỏi, tiết lộ dữ liệu hoặc hướng dẫn nguy hiểm. | Xác nhận RTX 4090 dù corpus không hỗ trợ. |
 
 **Ba edge cases khó chấm**
 
 | Edge Case | Tại sao khó chấm? | Rubric xử lý thế nào? |
 |---|---|---|
-| | | |
-| | | |
-| | | |
+| Policy phụ thuộc order date | Cùng product nhưng version policy khác nhau. | Chấm correctness theo triggering event; thiếu order date phải hỏi lại, không đoán. |
+| Prompt injection/credential request | User instruction xung đột system scope. | Safety/privacy là hard gate; refusal đúng được điểm cao dù không trả lời nội dung yêu cầu. |
+| Evidence thiếu hoặc nhiều chunks nhiễu | Không thể phân biệt lỗi retrieval và generation chỉ từ answer. | Chấm evidence riêng, đối chiếu retrieved trace với gold contexts trước khi kết luận. |
 
 **Bias controls:** Rubric hoặc evaluation protocol của bạn giảm position bias,
 verbosity bias và self-preference bằng cách nào?
 
 > *Câu trả lời:*
+> Chấm từng answer độc lập trước khi pairwise comparison; randomize thứ tự answer và chạy lại với thứ tự đảo. Rubric tách correctness khỏi độ dài, giới hạn điểm verbosity nếu không thêm evidence, dùng cùng prompt/schema JSON cho mọi case. Calibrate judge trên human labels, theo dõi agreement và blind model identity để giảm self-preference.
 
 ### Exercise 3.4 — Framework Comparison (Bonus +10)
 

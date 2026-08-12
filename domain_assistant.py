@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 from openai import OpenAI, OpenAIError
 
 load_dotenv(Path(__file__).resolve().with_name(".env"))
@@ -266,6 +268,32 @@ class OpenAIGenerator:
         return answer
 
 
+class GeminiGenerator:
+    def __init__(self, max_output_tokens: int = 300) -> None:
+        api_key = os.getenv("GOOGLE_API_KEY", "").strip()
+        self.model = os.getenv("GOOGLE_MODEL", "").strip()
+        if not api_key:
+            raise RuntimeError("GOOGLE_API_KEY is missing from .env")
+        if not self.model:
+            raise RuntimeError("GOOGLE_MODEL is missing from .env")
+        self.client = genai.Client(api_key=api_key)
+        self.max_output_tokens = max_output_tokens
+
+    def generate(self, prompt: str) -> str:
+        response = self.client.models.generate_content(
+            model=self.model,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                max_output_tokens=self.max_output_tokens,
+            ),
+        )
+        answer = response.text.strip() if response.text else ""
+        if not answer:
+            raise RuntimeError("Gemini returned an empty answer")
+        return answer
+
+
 @dataclass(frozen=True)
 class DomainResponse:
     question: str
@@ -296,10 +324,20 @@ class DomainAssistant:
         top_k: int = 5,
     ) -> DomainAssistant:
         corpus_id, chunks = load_corpus(corpus_dir)
+        
+        if generator is not None:
+            pass
+        elif os.getenv("GOOGLE_API_KEY", "").strip():
+            generator = GeminiGenerator()
+        elif os.getenv("OPENAI_API_KEY", "").strip():
+            generator = OpenAIGenerator()
+        else:
+            raise RuntimeError("No API key found in .env. Set GOOGLE_API_KEY or OPENAI_API_KEY")
+        
         return cls(
             corpus_id,
             BM25Retriever(chunks),
-            generator if generator is not None else OpenAIGenerator(),
+            generator,
             top_k,
         )
 
@@ -508,7 +546,7 @@ def main() -> int:
             json.dumps(artifact, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-    except (OSError, OpenAIError, TypeError, ValueError, RuntimeError) as exc:
+    except (OSError, OpenAIError, TypeError, ValueError, RuntimeError, genai.errors.APIError) as exc:
         print(f"ERROR: {exc}")
         return 2
     print(f"Generated {len(artifact['answers'])} actual answers: {output}")
